@@ -17,52 +17,61 @@ const AUTH_TOKEN = 'eDmfkq$N^t0*NAPAfU$WaFXNE3*^ewqj!8Pop&DZ4F6CZPgG5!7f@Q44e%ZJ
 
 type RawResponse = { [prop: string]: string[] }
 
+
+let globalInterval: NodeJS.Timeout | null = null
+let lastIndex = 0
+let currentKey = ''
+
 io.on('connection', socket => {
   console.log('📱 Cliente conectado:', socket.id)
 
-  let lastIndex = 0          // índice do último mensagem enviado
-  let intervalId: NodeJS.Timeout
-
-  // aguarda o cliente enviar a KEY
+  // espera o cliente enviar a chave para iniciar o polling
   socket.on('startPolling', async ({ key }: { key: string }) => {
+    currentKey = key
     console.log(`🔑 Iniciando polling para chave "${key}"`)
 
-    // dispara uma vez imediatamente
-    await fetchAndEmit(key)
-
-    // dispara polling a cada 3s
-    intervalId = setInterval(() => fetchAndEmit(key), 3000)
-  })
-
-  // função genérica de polling + parse + emit
-  async function fetchAndEmit(key: string) {
-    try {
-      const url = `${BASE}?key=${key}`
-      const res = await axios.get<RawResponse>(url, {
-        headers: { Authorization: AUTH_TOKEN }
-      })
-      const data = res.data
-
-      // pega dinamicamente a primeira propriedade (ex: "propertyName")
-      const propName = Object.keys(data)[0]
-      const rawMsgs = data[propName] || []
-
-      // envia só as novas mensagens
-      while (lastIndex < rawMsgs.length) {
-        const parsedMsg = JSON.parse(rawMsgs[lastIndex])
-        socket.emit('new_message', parsedMsg)
-        lastIndex++
-      }
-    } catch (err: any) {
-      console.error('❌ Erro no polling:', err.message)
+    // se ainda não há interval ativo, inicia
+    if (!globalInterval) {
+      await fetchAndEmit()
+      globalInterval = setInterval(fetchAndEmit, 3000)
     }
-  }
+  })
 
   socket.on('disconnect', () => {
     console.log('❌ Cliente desconectou:', socket.id)
-    clearInterval(intervalId)
+    // se nenhum cliente permanecer conectado, encerra o polling
+    if (io.engine.clientsCount === 0 && globalInterval) {
+      clearInterval(globalInterval)
+      globalInterval = null
+      lastIndex = 0
+      currentKey = ''
+    }
   })
 })
+
+// funcao de polling + parse + broadcast
+async function fetchAndEmit() {
+  if (!currentKey) return
+
+  try {
+    const url = `${BASE}?key=${currentKey}`
+    const res = await axios.get<RawResponse>(url, {
+      headers: { Authorization: AUTH_TOKEN }
+    })
+    const data = res.data
+
+    const propName = Object.keys(data)[0]
+    const rawMsgs = data[propName] || []
+
+    while (lastIndex < rawMsgs.length) {
+      const parsedMsg = JSON.parse(rawMsgs[lastIndex])
+      io.emit('new_message', parsedMsg)
+      lastIndex++
+    }
+  } catch (err: any) {
+    console.error('❌ Erro no polling:', err.message)
+  }
+}
 
 const PORT = 4000
 server.listen(PORT, () => {
